@@ -1,5 +1,10 @@
 import './style.css';
 import {
+  GlobalHangerEntry,
+  fetchGlobalHangerHighscores,
+  submitGlobalHangerScore,
+} from './api/highscores';
+import {
   ACCESSORIES,
   CAT_COLORS,
   EYE_COLORS,
@@ -12,16 +17,20 @@ import {
   HangerState,
   loadHangerState,
   recordHangerScore,
+  resolveDeviceId,
   saveHangerState,
 } from './storage/state';
 
 type ScreenName = 'home' | 'options' | 'game' | 'highscores';
+type HsMode = 'global' | 'local';
 
 let state: HangerState;
 let currentScreen: ScreenName = 'home';
+let hsMode: HsMode = 'global';
 let optionsFromPlay = false;
 let stage: HangerStage | null = null;
 let homeAnimId: number | null = null;
+let hsPollInterval: number | null = null;
 
 function renderCatThumb(
   canvas: HTMLCanvasElement,
@@ -128,8 +137,34 @@ function buildApp(): void {
       <div class="top-nav">
         <button id="btn-hs-back" class="btn btn-small">← Terug</button>
         <h2 class="screen-heading">Highscores</h2>
-        <span style="width:60px"></span>
+        <button id="btn-hs-refresh" class="btn btn-small">Vernieuw</button>
       </div>
+
+      <div class="hs-mode-tabs">
+        <button id="btn-hs-global" class="hs-mode-btn active" type="button">🌐 Wereldwijd</button>
+        <button id="btn-hs-local" class="hs-mode-btn" type="button">📱 Mijn Scores</button>
+      </div>
+
+      <div class="hs-status-bar">
+        <span id="hs-status-text">Verbinden met globale server...</span>
+        <button id="btn-hs-config" class="btn btn-small" type="button">Server</button>
+      </div>
+
+      <div id="hs-config-panel" class="hs-config-panel hidden">
+        <p class="hs-config-help">
+          Vul de URL van je gedeelde Arcade Highscores Worker in om scores met andere telefoons te delen.
+        </p>
+        <div class="hs-url-row">
+          <input
+            id="api-url-input"
+            class="name-input"
+            type="url"
+            placeholder="https://arcade-highscores-api.workers.dev"
+          />
+          <button id="btn-save-api-url" class="btn btn-small" type="button">Opslaan</button>
+        </div>
+      </div>
+
       <div id="hs-list" class="hs-list"></div>
     </section>
   `;
@@ -215,10 +250,12 @@ function showScreen(target: ScreenName): void {
   });
 
   if (target === 'home') {
+    stopHighscorePolling();
     stopGameStage();
     refreshHome();
     startHomePreview();
   } else if (target === 'options') {
+    stopHighscorePolling();
     stopHomePreview();
     stopGameStage();
     populateOptions();
@@ -226,12 +263,14 @@ function showScreen(target: ScreenName): void {
       ? 'Kies je Katkleur'
       : 'Katopties';
   } else if (target === 'game') {
+    stopHighscorePolling();
     stopHomePreview();
     startGameStage();
   } else if (target === 'highscores') {
     stopHomePreview();
     stopGameStage();
-    renderHighscores();
+    void loadHighscores();
+    startHighscorePolling();
   }
 }
 
@@ -319,7 +358,17 @@ function startGameStage(): void {
     onRelease: (elapsed) => {
       soundFX.playFall();
       document.getElementById('game-hint')!.textContent = 'Oh nee, losgelaten!';
-      const { isNewBest } = recordHangerScore(state, elapsed);
+      const { isNewBest, entry } = recordHangerScore(state, elapsed);
+      if (state.apiBaseUrl) {
+        void submitGlobalHangerScore(state.apiBaseUrl, {
+          deviceId: state.deviceId,
+          playerName: state.playerName,
+          timeSec: entry.timeSec,
+          colorId: state.colorId,
+          eyeColor: state.eyeColor,
+          accessory: state.accessory,
+        });
+      }
       window.setTimeout(() => {
         if (currentScreen !== 'game') return;
         document.getElementById('result-time')!.textContent = `${elapsed.toFixed(2)} s`;
@@ -337,7 +386,105 @@ function stopGameStage(): void {
   stage?.stop();
 }
 
-function renderHighscores(): void {
+async function loadHighscores(): Promise<void> {
+  document.getElementById('btn-hs-global')!.classList.toggle('active', hsMode === 'global');
+  document.getElementById('btn-hs-local')!.classList.toggle('active', hsMode === 'local');
+
+  const statusEl = document.getElementById('hs-status-text')!;
+  const apiInput = document.getElementById('api-url-input') as HTMLInputElement;
+  apiInput.value = state.apiBaseUrl;
+
+  if (hsMode === 'local') {
+    statusEl.textContent = `Lokale geschiedenis (${state.highscores.length} scores op dit toestel)`;
+    renderLocalHighscores();
+    return;
+  }
+
+  if (!state.apiBaseUrl) {
+    statusEl.textContent = 'Geen server ingesteld (tik Server om URL in te vullen)';
+    renderLocalHighscores();
+    return;
+  }
+
+  statusEl.textContent = 'Wereldwijde scores laden...';
+  try {
+    const bestLocal = state.highscores[0];
+    if (bestLocal && bestLocal.timeSec > 0) {
+      await submitGlobalHangerScore(state.apiBaseUrl, {
+        deviceId: state.deviceId,
+        playerName: state.playerName,
+        timeSec: bestLocal.timeSec,
+        colorId: bestLocal.colorId,
+        eyeColor: bestLocal.eyeColor,
+        accessory: bestLocal.accessory,
+      });
+    }
+    const res = await fetchGlobalHangerHighscores(state.apiBaseUrl, state.deviceId, 50);
+    statusEl.textContent = `Live verbonden • ${res.entries.length} spelers wereldwijd`;
+    renderGlobalHighscores(res.entries);
+  } catch {
+    statusEl.textContent = 'Server niet bereikbaar (offline weergave)';
+    renderLocalHighscores();
+  }
+}
+
+function renderGlobalHighscores(entries: GlobalHangerEntry[]): void {
+  const list = document.getElementById('hs-list')!;
+  if (entries.length === 0) {
+    list.innerHTML = `<div class="empty-msg">Nog geen online scores! Speel een potje Cat Hanger om als eerste bovenaan te staan.</div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+  entries.forEach((item) => {
+    const row = document.createElement('div');
+    const isMe = item.deviceId === state.deviceId;
+    row.className = `hs-row${isMe ? ' is-me' : ''}`;
+
+    const rank = document.createElement('div');
+    rank.className = 'hs-rank';
+    rank.textContent = `#${item.rank}`;
+
+    const icon = document.createElement('canvas');
+    icon.className = 'hs-icon';
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    icon.width = 38 * dpr;
+    icon.height = 38 * dpr;
+    const ctx = icon.getContext('2d');
+    if (ctx) {
+      ctx.scale(dpr, dpr);
+      drawCartoonCat(ctx, 19, 17, 10, {
+        color: getCatColor(item.colorId),
+        eyeColor: item.eyeColor,
+        accessory: item.accessory,
+        pose: 'portrait',
+      });
+    }
+
+    const info = document.createElement('div');
+    info.className = 'hs-info';
+    const name = document.createElement('div');
+    name.className = 'hs-name';
+    name.textContent = isMe ? `${item.playerName} (Jij)` : item.playerName;
+    const sub = document.createElement('div');
+    sub.className = 'hs-sub';
+    sub.textContent = getCatColor(item.colorId).name;
+    info.appendChild(name);
+    info.appendChild(sub);
+
+    const score = document.createElement('div');
+    score.className = 'hs-score';
+    score.textContent = `${item.timeSec.toFixed(2)} s`;
+
+    row.appendChild(rank);
+    row.appendChild(icon);
+    row.appendChild(info);
+    row.appendChild(score);
+    list.appendChild(row);
+  });
+}
+
+function renderLocalHighscores(): void {
   const list = document.getElementById('hs-list')!;
   if (state.highscores.length === 0) {
     list.innerHTML = `<div class="empty-msg">Nog geen scores! Speel een potje Cat Hanger om je tijd vast te leggen.</div>`;
@@ -390,6 +537,22 @@ function renderHighscores(): void {
     row.appendChild(score);
     list.appendChild(row);
   });
+}
+
+function startHighscorePolling(): void {
+  stopHighscorePolling();
+  hsPollInterval = window.setInterval(() => {
+    if (currentScreen === 'highscores' && hsMode === 'global') {
+      void loadHighscores();
+    }
+  }, 6000);
+}
+
+function stopHighscorePolling(): void {
+  if (hsPollInterval !== null) {
+    window.clearInterval(hsPollInterval);
+    hsPollInterval = null;
+  }
 }
 
 function wireEvents(): void {
@@ -467,9 +630,46 @@ function wireEvents(): void {
     soundFX.playUiTap();
     showScreen('home');
   });
+
+  document.getElementById('btn-hs-refresh')!.addEventListener('click', () => {
+    soundFX.playUiTap();
+    void loadHighscores();
+  });
+
+  document.getElementById('btn-hs-global')!.addEventListener('click', () => {
+    soundFX.playUiTap();
+    hsMode = 'global';
+    void loadHighscores();
+  });
+
+  document.getElementById('btn-hs-local')!.addEventListener('click', () => {
+    soundFX.playUiTap();
+    hsMode = 'local';
+    void loadHighscores();
+  });
+
+  document.getElementById('btn-hs-config')!.addEventListener('click', () => {
+    soundFX.playUiTap();
+    document.getElementById('hs-config-panel')!.classList.toggle('hidden');
+  });
+
+  document.getElementById('btn-save-api-url')!.addEventListener('click', () => {
+    soundFX.playUiTap();
+    const input = document.getElementById('api-url-input') as HTMLInputElement;
+    state.apiBaseUrl = input.value.trim().replace(/\/+$/, '');
+    saveHangerState(state);
+    document.getElementById('hs-config-panel')!.classList.add('hidden');
+    hsMode = 'global';
+    void loadHighscores();
+  });
 }
 
-state = loadHangerState();
-soundFX.enabled = state.soundEnabled;
-buildApp();
-showScreen('home');
+async function init(): Promise<void> {
+  const deviceId = await resolveDeviceId();
+  state = loadHangerState(deviceId);
+  soundFX.enabled = state.soundEnabled;
+  buildApp();
+  showScreen('home');
+}
+
+void init();

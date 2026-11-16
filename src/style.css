@@ -385,3 +385,75 @@ body {
   color: var(--muted);
   padding: 36px 16px;
 }
+
+.hs-mode-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+
+.hs-mode-btn {
+  flex: 1;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hs-mode-btn.active {
+  border-color: var(--amber);
+  background: rgba(251, 191, 36, 0.18);
+  color: #fde047;
+}
+
+.hs-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.hs-config-panel {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hs-config-panel.hidden {
+  display: none;
+}
+
+.hs-config-help {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.hs-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hs-row.is-me {
+  border-color: var(--amber);
+  background: rgba(251, 191, 36, 0.14);
+}
+
