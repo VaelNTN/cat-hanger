@@ -5,6 +5,7 @@ export type HangerPhase = 'ready' | 'holding' | 'falling' | 'finished';
 
 export interface HangerStageCallbacks {
   onStartHold: () => void;
+  onTick?: (elapsedSeconds: number) => void;
   onRelease: (elapsedSeconds: number) => void;
   onMissTap: () => void;
 }
@@ -28,8 +29,6 @@ export class HangerStage {
   private animClock = 0;
   private holdStartMs = 0;
   private holdElapsed = 0;
-  private pointerX = 0;
-  private pointerY = 0;
   private activePointerId: number | null = null;
 
   // Rope & swing physics
@@ -64,7 +63,6 @@ export class HangerStage {
 
     this.handleResize = this.handleResize.bind(this);
     this.onPointerDown = this.onPointerDown.bind(this);
-    this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
     this.loop = this.loop.bind(this);
   }
@@ -97,7 +95,6 @@ export class HangerStage {
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('pointercancel', this.onPointerUp);
     this.lastTime = performance.now();
@@ -108,7 +105,6 @@ export class HangerStage {
     this.active = false;
     window.removeEventListener('resize', this.handleResize);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
-    window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointercancel', this.onPointerUp);
     if (this.rafId !== null) {
@@ -127,16 +123,15 @@ export class HangerStage {
     this.canvas.height = Math.round(rect.height * this.dpr);
 
     this.anchorX = this.width * 0.5;
-    this.anchorY = 18;
+    this.anchorY = 26;
     this.catSize = Math.max(26, Math.min(38, Math.min(this.width, this.height) * 0.085));
-    this.ropeLength = Math.max(130, Math.min(this.height * 0.44, 240));
+    this.ropeLength = Math.max(120, Math.min(this.height * 0.42, 230));
     if (this.phase === 'ready') {
       this.updateCatPosFromAngle(0);
     }
   }
 
   private updateCatPosFromAngle(angle: number): void {
-    // Rope end is where cat paws grip (-1.32 * catSize from cat head center)
     const totalLen = this.ropeLength + this.catSize * 1.32;
     this.catX = this.anchorX + Math.sin(angle) * totalLen;
     this.catY = this.anchorY + Math.cos(angle) * totalLen;
@@ -163,20 +158,11 @@ export class HangerStage {
     }
 
     this.activePointerId = ev.pointerId;
-    this.pointerX = x;
-    this.pointerY = y;
     this.phase = 'holding';
     this.holdStartMs = performance.now();
     this.holdElapsed = 0;
     this.swingPhase = 0.25;
     this.callbacks.onStartHold();
-  }
-
-  private onPointerMove(ev: PointerEvent): void {
-    if (this.phase !== 'holding' || ev.pointerId !== this.activePointerId) return;
-    const rect = this.canvas.getBoundingClientRect();
-    this.pointerX = Math.max(36, Math.min(this.width - 36, ev.clientX - rect.left));
-    this.pointerY = Math.max(36, Math.min(this.height - 80, ev.clientY - rect.top));
   }
 
   private onPointerUp(ev: PointerEvent): void {
@@ -210,12 +196,11 @@ export class HangerStage {
     this.animClock += dt;
 
     if (this.phase === 'ready') {
-      // Gentle idle dangle
       this.swingAngle = Math.sin(this.animClock * 1.4) * 0.04;
       this.updateCatPosFromAngle(this.swingAngle);
     } else if (this.phase === 'holding') {
       this.holdElapsed = (now - this.holdStartMs) / 1000;
-      // Swinging intensifies over time while holding
+      this.callbacks.onTick?.(this.holdElapsed);
       const speed = 2.9 + Math.min(2.8, this.holdElapsed * 0.08);
       const maxAngle = Math.min(0.85, 0.42 + this.holdElapsed * 0.025);
       this.swingPhase += dt * speed;
@@ -226,7 +211,6 @@ export class HangerStage {
       this.catX += this.fallVx * dt;
       this.catY += this.fallVy * dt;
       this.fallRot += this.fallSpin * dt;
-      // Rope swings back gently alone
       this.swingAngle *= Math.pow(0.15, dt);
 
       if (this.catY > this.height + this.catSize * 3) {
@@ -243,19 +227,47 @@ export class HangerStage {
     ctx.scale(this.dpr, this.dpr);
     ctx.clearRect(0, 0, this.width, this.height);
 
-    // Subtle sky/clouds backdrop
+    // Warm cozy twilight rooftop & room beam backdrop
     this.drawBackdrop(ctx);
 
-    // Beam / branch at top
-    ctx.fillStyle = '#78350f';
-    ctx.strokeStyle = '#451a03';
-    ctx.lineWidth = 3;
+    // Wooden pergola / rafter beam spanning the top with brackets
+    const beamGrad = ctx.createLinearGradient(0, 0, 0, 24);
+    beamGrad.addColorStop(0, '#92400e');
+    beamGrad.addColorStop(0.5, '#78350f');
+    beamGrad.addColorStop(1, '#451a03');
+    ctx.fillStyle = beamGrad;
+    ctx.fillRect(0, 0, this.width, 22);
+    ctx.fillStyle = '#b45309';
+    ctx.fillRect(0, 3, this.width, 3);
+    ctx.strokeStyle = '#290f02';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.roundRect(this.anchorX - 75, 0, 150, 22, 10);
+    ctx.moveTo(0, 22);
+    ctx.lineTo(this.width, 22);
+    ctx.stroke();
+
+    // Cozy side wall/beam brackets
+    ctx.fillStyle = '#572408';
+    ctx.fillRect(10, 22, 16, 26);
+    ctx.fillRect(this.width - 26, 22, 16, 26);
+
+    // Brass hook & anchor ring
+    ctx.fillStyle = '#fbbf24';
+    ctx.strokeStyle = '#78350f';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(this.anchorX - 18, 6, 36, 16, 6);
     ctx.fill();
     ctx.stroke();
 
-    // Rope from beam to paw grip point
+    ctx.beginPath();
+    ctx.arc(this.anchorX, this.anchorY, 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#fde68a';
+    ctx.fill();
+    ctx.strokeStyle = '#92400e';
+    ctx.stroke();
+
+    // Rope from brass anchor to paw grip point
     const ropeEndX = this.anchorX + Math.sin(this.swingAngle) * this.ropeLength;
     const ropeEndY = this.anchorY + Math.cos(this.swingAngle) * this.ropeLength;
 
@@ -281,6 +293,21 @@ export class HangerStage {
     ctx.beginPath();
     ctx.arc(ropeEndX, ropeEndY, 7, 0, Math.PI * 2);
     ctx.fill();
+
+    // Pulsing grab circle when ready
+    if (this.phase === 'ready') {
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.72)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(
+        this.catX,
+        this.catY + this.catSize * 0.35,
+        this.catSize * 1.65 + Math.sin(this.animClock * 4.5) * 5,
+        0,
+        Math.PI * 2
+      );
+      ctx.stroke();
+    }
 
     // Cat
     if (this.phase !== 'finished') {
@@ -312,7 +339,7 @@ export class HangerStage {
     // Wind / motion lines while swinging
     if (this.phase === 'holding' && Math.abs(Math.cos(this.swingPhase)) > 0.5) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.strokeStyle = 'rgba(253, 224, 71, 0.32)';
       ctx.lineWidth = 2;
       const dir = Math.cos(this.swingPhase) > 0 ? -1 : 1;
       for (let i = -1; i <= 1; i++) {
@@ -326,58 +353,103 @@ export class HangerStage {
       ctx.restore();
     }
 
-    // Live timer directly under the player's finger while holding!
-    if (this.phase === 'holding') {
-      this.drawFingerTimer(ctx, this.pointerX, this.pointerY + 46, this.holdElapsed);
-    }
-
     ctx.restore();
   }
 
   private drawBackdrop(ctx: CanvasRenderingContext2D): void {
+    // Warm cozy twilight sky gradient
     const grad = ctx.createLinearGradient(0, 0, 0, this.height);
-    grad.addColorStop(0, '#0f172a');
-    grad.addColorStop(0.55, '#1e293b');
-    grad.addColorStop(1, '#09111f');
+    grad.addColorStop(0, '#1e132b');
+    grad.addColorStop(0.45, '#431932');
+    grad.addColorStop(0.82, '#7c2d12');
+    grad.addColorStop(1, '#2a1208');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Subtle soft clouds
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-    const drift = (this.animClock * 12) % (this.width + 180);
-    for (let i = 0; i < 3; i++) {
-      const cx = ((drift + i * 190) % (this.width + 180)) - 90;
-      const cy = 110 + i * 115;
+    // Subtle twinkling stars in upper sky
+    ctx.fillStyle = 'rgba(254, 240, 138, 0.45)';
+    for (let i = 0; i < 18; i++) {
+      const sx = ((i * 89 + 23) % 100) * 0.01 * this.width;
+      const sy = 40 + ((i * 47) % 100) * 0.004 * this.height;
+      const pulse = 0.5 + 0.5 * Math.sin(this.animClock * 2 + i);
+      ctx.globalAlpha = 0.25 + pulse * 0.45;
       ctx.beginPath();
-      ctx.ellipse(cx, cy, 62, 22, 0, 0, Math.PI * 2);
+      ctx.arc(sx, sy, (i % 2) + 1.1, 0, Math.PI * 2);
       ctx.fill();
     }
-  }
+    ctx.globalAlpha = 1;
 
-  private drawFingerTimer(
-    ctx: CanvasRenderingContext2D,
-    tx: number,
-    ty: number,
-    seconds: number
-  ): void {
-    const clampedX = Math.max(66, Math.min(this.width - 66, tx));
-    const clampedY = Math.max(40, Math.min(this.height - 34, ty));
-    const text = `${seconds.toFixed(2)} s`;
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 2.5;
+    // Warm crescent moon
+    const moonX = this.width * 0.82;
+    const moonY = 74;
+    ctx.fillStyle = 'rgba(253, 224, 71, 0.88)';
     ctx.beginPath();
-    ctx.roundRect(clampedX - 58, clampedY - 22, 116, 44, 22);
+    ctx.arc(moonX, moonY, 18, 0, Math.PI * 2);
     ctx.fill();
-    ctx.stroke();
+    ctx.fillStyle = '#2b152d';
+    ctx.beginPath();
+    ctx.arc(moonX + 7, moonY - 4, 15, 0, Math.PI * 2);
+    ctx.fill();
 
-    ctx.fillStyle = '#fde047';
-    ctx.font = '700 20px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, clampedX, clampedY + 1);
-    ctx.restore();
+    // Cozy warm string lights draped under the pergola beam
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.28)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 24);
+    ctx.quadraticCurveTo(this.width * 0.25, 44, this.width * 0.5, 24);
+    ctx.quadraticCurveTo(this.width * 0.75, 44, this.width, 24);
+    ctx.stroke();
+    for (let i = 1; i <= 7; i++) {
+      const lx = (this.width / 8) * i;
+      const t = (i % 4) / 4;
+      const ly = 24 + Math.sin(t * Math.PI) * 14;
+      ctx.fillStyle = 'rgba(253, 224, 71, 0.75)';
+      ctx.beginPath();
+      ctx.arc(lx, ly, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Cozy rooftop silhouettes with warm glowing windows at bottom
+    const baseY = this.height;
+    const bldgs = [
+      { x: 0, w: 0.22, h: 96, roof: 'gable' },
+      { x: 0.2, w: 0.24, h: 72, roof: 'flat' },
+      { x: 0.42, w: 0.2, h: 108, roof: 'gable' },
+      { x: 0.6, w: 0.22, h: 78, roof: 'flat' },
+      { x: 0.8, w: 0.22, h: 94, roof: 'gable' },
+    ];
+    for (let bi = 0; bi < bldgs.length; bi++) {
+      const b = bldgs[bi];
+      const bx = b.x * this.width;
+      const bw = b.w * this.width + 4;
+      const by = baseY - b.h;
+      ctx.fillStyle = '#1c0f0a';
+      ctx.fillRect(bx, by, bw, b.h);
+      if (b.roof === 'gable') {
+        ctx.beginPath();
+        ctx.moveTo(bx - 4, by);
+        ctx.lineTo(bx + bw / 2, by - 22);
+        ctx.lineTo(bx + bw + 4, by);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // Warm lit cozy windows
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.34)';
+      for (let wy = by + 16; wy < baseY - 24; wy += 24) {
+        for (let wx = bx + 12; wx < bx + bw - 18; wx += 22) {
+          if ((wx + wy + bi) % 3 !== 0) {
+            ctx.beginPath();
+            ctx.roundRect(wx, wy, 10, 14, 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
+    // Cozy warm cushioned sill / roof ledge at very bottom
+    ctx.fillStyle = '#451a03';
+    ctx.fillRect(0, baseY - 12, this.width, 12);
+    ctx.fillStyle = '#92400e';
+    ctx.fillRect(0, baseY - 14, this.width, 3);
   }
 }

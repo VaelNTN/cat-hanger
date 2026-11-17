@@ -31,6 +31,8 @@ let optionsFromPlay = false;
 let stage: HangerStage | null = null;
 let homeAnimId: number | null = null;
 let hsPollInterval: number | null = null;
+let hsTapCount = 0;
+let hsTapTimer: number | null = null;
 
 function renderCatThumb(
   canvas: HTMLCanvasElement,
@@ -59,48 +61,46 @@ function buildApp(): void {
       <div class="home-hero">
         <canvas id="home-cat-canvas" class="cat-preview-canvas"></canvas>
         <h1 class="game-title">Cat Hanger</h1>
-        <p class="game-subtitle">
-          Druk op de kat en houd je vinger vast terwijl hij zwiert. Laat los en bekijk je tijd!
-        </p>
+        <p class="game-subtitle">Hold the cat and hang on!</p>
         <div id="home-best-pill" class="best-pill hidden"></div>
       </div>
       <div class="home-actions">
         <button id="btn-home-play" class="btn btn-primary">Play</button>
-        <button id="btn-home-options" class="btn btn-secondary">Katopties</button>
-        <button id="btn-home-highscores" class="btn btn-secondary">Highscores</button>
+        <button id="btn-home-options" class="btn btn-secondary">Cat Style</button>
+        <button id="btn-home-highscores" class="btn btn-secondary">Leaderboard</button>
       </div>
     </section>
 
-    <!-- KATOPTIES / KATKLEUR SCREEN -->
+    <!-- CAT STYLE SCREEN -->
     <section id="screen-options" class="screen hidden">
       <div class="top-nav">
-        <button id="btn-options-back" class="btn btn-small">← Terug</button>
-        <h2 id="options-heading" class="screen-heading">Kies je Katkleur</h2>
+        <button id="btn-options-back" class="btn btn-small">← Back</button>
+        <h2 id="options-heading" class="screen-heading">Cat Style</h2>
         <span style="width:60px"></span>
       </div>
 
       <div class="options-scroll">
         <div>
-          <p class="section-label">Jouw Naam (voor Highscores)</p>
-          <input id="player-name-input" class="name-input" type="text" maxlength="20" placeholder="Kattenbaas" />
+          <p class="section-label">Player Name</p>
+          <input id="player-name-input" class="name-input" type="text" maxlength="20" placeholder="Your name" />
         </div>
 
         <div>
-          <p class="section-label">Katkleur (kies om te spelen)</p>
+          <p class="section-label">Cat Color</p>
           <div id="cat-color-grid" class="color-grid"></div>
         </div>
 
         <div>
-          <p class="section-label">Oogkleur</p>
+          <p class="section-label">Eye Color</p>
           <div id="eye-chips" class="chip-row"></div>
         </div>
 
         <div>
-          <p class="section-label">Accessoire</p>
+          <p class="section-label">Accessory</p>
           <div id="acc-chips" class="chip-row"></div>
         </div>
 
-        <button id="btn-options-start" class="btn btn-primary" style="margin-top:6px;">Start Spelen</button>
+        <button id="btn-options-start" class="btn btn-primary" style="margin-top:6px;">Play Now</button>
       </div>
     </section>
 
@@ -109,59 +109,59 @@ function buildApp(): void {
       <div class="game-top-bar">
         <button id="btn-game-menu" class="btn btn-small">← Menu</button>
         <div style="display:flex;gap:8px;">
-          <button id="btn-game-options" class="btn btn-small">Katopties</button>
-          <button id="btn-game-sound" class="btn btn-small">Geluid: Aan</button>
+          <button id="btn-game-options" class="btn btn-small">Cat Style</button>
+          <button id="btn-game-sound" class="btn btn-small">🔊 On</button>
         </div>
       </div>
 
-      <div id="game-hint" class="hint-banner">Druk op de kat en houd vast!</div>
+      <div class="timer-hud">
+        <div id="timer-value" class="timer-value">0.00 s</div>
+        <div id="timer-status" class="timer-sub">Tap and hold the cat!</div>
+      </div>
 
       <div class="stage-wrap">
         <canvas id="hanger-canvas" class="stage-canvas"></canvas>
 
         <div id="result-overlay" class="result-overlay hidden">
           <div class="result-card">
-            <h3 id="result-title" style="margin:0;">De kat viel!</h3>
+            <h3 id="result-title" style="margin:0;">Cat Dropped!</h3>
             <div id="result-time" class="result-time">0.00 s</div>
             <div id="result-badge" style="color:#34d399;font-weight:700;font-size:0.9rem;"></div>
-            <button id="btn-retry" class="btn btn-primary">Opnieuw</button>
-            <button id="btn-result-hs" class="btn btn-secondary">Highscores</button>
-            <button id="btn-result-menu" class="btn btn-small">Terug naar Menu</button>
+            <button id="btn-retry" class="btn btn-primary">Try Again</button>
+            <button id="btn-result-hs" class="btn btn-secondary">Leaderboard</button>
+            <button id="btn-result-menu" class="btn btn-small">Menu</button>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- HIGHSCORES SCREEN -->
+    <!-- LEADERBOARD SCREEN -->
     <section id="screen-highscores" class="screen hidden">
       <div class="top-nav">
-        <button id="btn-hs-back" class="btn btn-small">← Terug</button>
-        <h2 class="screen-heading">Highscores</h2>
-        <button id="btn-hs-refresh" class="btn btn-small">Vernieuw</button>
+        <button id="btn-hs-back" class="btn btn-small">← Back</button>
+        <h2 id="hs-heading" class="screen-heading">Leaderboard</h2>
+        <button id="btn-hs-refresh" class="btn btn-small">Refresh</button>
       </div>
 
       <div class="hs-mode-tabs">
-        <button id="btn-hs-global" class="hs-mode-btn active" type="button">🌐 Wereldwijd</button>
-        <button id="btn-hs-local" class="hs-mode-btn" type="button">📱 Mijn Scores</button>
+        <button id="btn-hs-global" class="hs-mode-btn active" type="button">🌐 Global</button>
+        <button id="btn-hs-local" class="hs-mode-btn" type="button">📱 Local</button>
       </div>
 
       <div class="hs-status-bar">
-        <span id="hs-status-text">Verbinden met globale server...</span>
-        <button id="btn-hs-config" class="btn btn-small" type="button">Server</button>
+        <span id="hs-status-text">Connecting...</span>
       </div>
 
       <div id="hs-config-panel" class="hs-config-panel hidden">
-        <p class="hs-config-help">
-          Vul de URL van je gedeelde Arcade Highscores Worker in om scores met andere telefoons te delen.
-        </p>
+        <p class="hs-config-help">Leaderboard API URL</p>
         <div class="hs-url-row">
           <input
             id="api-url-input"
             class="name-input"
             type="url"
-            placeholder="https://arcade-highscores-api.workers.dev"
+            placeholder="https://..."
           />
-          <button id="btn-save-api-url" class="btn btn-small" type="button">Opslaan</button>
+          <button id="btn-save-api-url" class="btn btn-small" type="button">Save</button>
         </div>
       </div>
 
@@ -177,7 +177,9 @@ function buildApp(): void {
 
 function populateOptions(): void {
   const nameInput = document.getElementById('player-name-input') as HTMLInputElement;
-  nameInput.value = state.playerName;
+  if (document.activeElement !== nameInput) {
+    nameInput.value = state.playerName;
+  }
 
   const grid = document.getElementById('cat-color-grid')!;
   grid.innerHTML = '';
@@ -197,9 +199,6 @@ function populateOptions(): void {
       state.colorId = c.id;
       saveHangerState(state);
       populateOptions();
-      if (optionsFromPlay) {
-        showScreen('game');
-      }
     });
     grid.appendChild(card);
   }
@@ -259,9 +258,6 @@ function showScreen(target: ScreenName): void {
     stopHomePreview();
     stopGameStage();
     populateOptions();
-    document.getElementById('options-heading')!.textContent = optionsFromPlay
-      ? 'Kies je Katkleur'
-      : 'Katopties';
   } else if (target === 'game') {
     stopHighscorePolling();
     stopHomePreview();
@@ -269,6 +265,7 @@ function showScreen(target: ScreenName): void {
   } else if (target === 'highscores') {
     stopHomePreview();
     stopGameStage();
+    document.getElementById('hs-config-panel')?.classList.add('hidden');
     void loadHighscores();
     startHighscorePolling();
   }
@@ -277,7 +274,7 @@ function showScreen(target: ScreenName): void {
 function refreshHome(): void {
   const pill = document.getElementById('home-best-pill')!;
   if (state.highscores.length > 0) {
-    pill.textContent = `Record: ${state.highscores[0].timeSec.toFixed(2)} s`;
+    pill.textContent = `Best: ${state.highscores[0].timeSec.toFixed(2)} s`;
     pill.classList.remove('hidden');
   } else {
     pill.classList.add('hidden');
@@ -328,10 +325,11 @@ function stopHomePreview(): void {
 
 function startGameStage(): void {
   document.getElementById('result-overlay')!.classList.add('hidden');
-  document.getElementById('game-hint')!.textContent = 'Druk op de kat en houd vast!';
+  document.getElementById('timer-value')!.textContent = '0.00 s';
+  document.getElementById('timer-status')!.textContent = 'Tap and hold the cat!';
   document.getElementById('btn-game-sound')!.textContent = state.soundEnabled
-    ? 'Geluid: Aan'
-    : 'Geluid: Uit';
+    ? '🔊 On'
+    : '🔇 Off';
 
   const canvas = document.getElementById('hanger-canvas') as HTMLCanvasElement;
   const appearance = {
@@ -350,19 +348,23 @@ function startGameStage(): void {
   stage = new HangerStage(canvas, appearance, {
     onStartHold: () => {
       soundFX.playGrab();
-      document.getElementById('game-hint')!.textContent = 'Blijf vasthouden... hij zwiert!';
+      document.getElementById('timer-status')!.textContent = 'Hold tight! Keep swinging!';
+    },
+    onTick: (elapsed) => {
+      document.getElementById('timer-value')!.textContent = `${elapsed.toFixed(2)} s`;
     },
     onMissTap: () => {
-      document.getElementById('game-hint')!.textContent = 'Tik precies OP de kat en houd vast!';
+      document.getElementById('timer-status')!.textContent = 'Tap directly ON the cat and hold!';
     },
     onRelease: (elapsed) => {
       soundFX.playFall();
-      document.getElementById('game-hint')!.textContent = 'Oh nee, losgelaten!';
+      document.getElementById('timer-value')!.textContent = `${elapsed.toFixed(2)} s`;
+      document.getElementById('timer-status')!.textContent = 'Whoa! Down you go!';
       const { isNewBest, entry } = recordHangerScore(state, elapsed);
       if (state.apiBaseUrl) {
         void submitGlobalHangerScore(state.apiBaseUrl, {
           deviceId: state.deviceId,
-          playerName: state.playerName,
+          playerName: state.playerName.trim() || 'Player',
           timeSec: entry.timeSec,
           colorId: state.colorId,
           eyeColor: state.eyeColor,
@@ -373,7 +375,7 @@ function startGameStage(): void {
         if (currentScreen !== 'game') return;
         document.getElementById('result-time')!.textContent = `${elapsed.toFixed(2)} s`;
         document.getElementById('result-badge')!.textContent = isNewBest
-          ? '★ Nieuw Persoonlijk Record!'
+          ? '★ New Personal Best!'
           : '';
         document.getElementById('result-overlay')!.classList.remove('hidden');
       }, 650);
@@ -395,24 +397,24 @@ async function loadHighscores(): Promise<void> {
   apiInput.value = state.apiBaseUrl;
 
   if (hsMode === 'local') {
-    statusEl.textContent = `Lokale geschiedenis (${state.highscores.length} scores op dit toestel)`;
+    statusEl.textContent = `Local Records (${state.highscores.length} saved)`;
     renderLocalHighscores();
     return;
   }
 
   if (!state.apiBaseUrl) {
-    statusEl.textContent = 'Geen server ingesteld (tik Server om URL in te vullen)';
+    statusEl.textContent = 'Offline Mode — Local Records';
     renderLocalHighscores();
     return;
   }
 
-  statusEl.textContent = 'Wereldwijde scores laden...';
+  statusEl.textContent = 'Connecting...';
   try {
     const bestLocal = state.highscores[0];
     if (bestLocal && bestLocal.timeSec > 0) {
       await submitGlobalHangerScore(state.apiBaseUrl, {
         deviceId: state.deviceId,
-        playerName: state.playerName,
+        playerName: state.playerName.trim() || 'Player',
         timeSec: bestLocal.timeSec,
         colorId: bestLocal.colorId,
         eyeColor: bestLocal.eyeColor,
@@ -420,10 +422,10 @@ async function loadHighscores(): Promise<void> {
       });
     }
     const res = await fetchGlobalHangerHighscores(state.apiBaseUrl, state.deviceId, 50);
-    statusEl.textContent = `Live verbonden • ${res.entries.length} spelers wereldwijd`;
+    statusEl.textContent = `Live • ${res.entries.length} players worldwide`;
     renderGlobalHighscores(res.entries);
   } catch {
-    statusEl.textContent = 'Server niet bereikbaar (offline weergave)';
+    statusEl.textContent = 'Offline Mode — Local Records';
     renderLocalHighscores();
   }
 }
@@ -431,7 +433,7 @@ async function loadHighscores(): Promise<void> {
 function renderGlobalHighscores(entries: GlobalHangerEntry[]): void {
   const list = document.getElementById('hs-list')!;
   if (entries.length === 0) {
-    list.innerHTML = `<div class="empty-msg">Nog geen online scores! Speel een potje Cat Hanger om als eerste bovenaan te staan.</div>`;
+    list.innerHTML = `<div class="empty-msg">No global scores yet. Play a round to claim #1!</div>`;
     return;
   }
 
@@ -465,7 +467,7 @@ function renderGlobalHighscores(entries: GlobalHangerEntry[]): void {
     info.className = 'hs-info';
     const name = document.createElement('div');
     name.className = 'hs-name';
-    name.textContent = isMe ? `${item.playerName} (Jij)` : item.playerName;
+    name.textContent = isMe ? `${item.playerName} (You)` : item.playerName;
     const sub = document.createElement('div');
     sub.className = 'hs-sub';
     sub.textContent = getCatColor(item.colorId).name;
@@ -487,7 +489,7 @@ function renderGlobalHighscores(entries: GlobalHangerEntry[]): void {
 function renderLocalHighscores(): void {
   const list = document.getElementById('hs-list')!;
   if (state.highscores.length === 0) {
-    list.innerHTML = `<div class="empty-msg">Nog geen scores! Speel een potje Cat Hanger om je tijd vast te leggen.</div>`;
+    list.innerHTML = `<div class="empty-msg">No scores yet. Play a round to set your record!</div>`;
     return;
   }
 
@@ -558,8 +560,7 @@ function stopHighscorePolling(): void {
 function wireEvents(): void {
   document.getElementById('btn-home-play')!.addEventListener('click', () => {
     soundFX.playUiTap();
-    optionsFromPlay = true;
-    showScreen('options');
+    showScreen('game');
   });
 
   document.getElementById('btn-home-options')!.addEventListener('click', () => {
@@ -575,7 +576,7 @@ function wireEvents(): void {
 
   document.getElementById('btn-options-back')!.addEventListener('click', () => {
     soundFX.playUiTap();
-    showScreen('home');
+    showScreen(optionsFromPlay ? 'game' : 'home');
   });
 
   document.getElementById('btn-options-start')!.addEventListener('click', () => {
@@ -584,7 +585,7 @@ function wireEvents(): void {
   });
 
   document.getElementById('player-name-input')!.addEventListener('input', (ev) => {
-    state.playerName = (ev.target as HTMLInputElement).value;
+    state.playerName = (ev.target as HTMLInputElement).value.slice(0, 20);
     saveHangerState(state);
   });
 
@@ -595,7 +596,7 @@ function wireEvents(): void {
 
   document.getElementById('btn-game-options')!.addEventListener('click', () => {
     soundFX.playUiTap();
-    optionsFromPlay = false;
+    optionsFromPlay = true;
     showScreen('options');
   });
 
@@ -605,14 +606,15 @@ function wireEvents(): void {
     saveHangerState(state);
     soundFX.playUiTap();
     document.getElementById('btn-game-sound')!.textContent = state.soundEnabled
-      ? 'Geluid: Aan'
-      : 'Geluid: Uit';
+      ? '🔊 On'
+      : '🔇 Off';
   });
 
   document.getElementById('btn-retry')!.addEventListener('click', () => {
     soundFX.playUiTap();
     document.getElementById('result-overlay')!.classList.add('hidden');
-    document.getElementById('game-hint')!.textContent = 'Druk op de kat en houd vast!';
+    document.getElementById('timer-value')!.textContent = '0.00 s';
+    document.getElementById('timer-status')!.textContent = 'Tap and hold the cat!';
     stage?.resetRound();
   });
 
@@ -648,9 +650,17 @@ function wireEvents(): void {
     void loadHighscores();
   });
 
-  document.getElementById('btn-hs-config')!.addEventListener('click', () => {
-    soundFX.playUiTap();
-    document.getElementById('hs-config-panel')!.classList.toggle('hidden');
+  document.getElementById('hs-heading')!.addEventListener('click', () => {
+    hsTapCount += 1;
+    if (hsTapTimer !== null) window.clearTimeout(hsTapTimer);
+    hsTapTimer = window.setTimeout(() => {
+      hsTapCount = 0;
+    }, 1500);
+    if (hsTapCount >= 5) {
+      hsTapCount = 0;
+      soundFX.playUiTap();
+      document.getElementById('hs-config-panel')!.classList.toggle('hidden');
+    }
   });
 
   document.getElementById('btn-save-api-url')!.addEventListener('click', () => {

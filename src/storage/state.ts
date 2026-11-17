@@ -64,7 +64,7 @@ export function loadHangerState(deviceId: string): HangerState {
     colorId: 0,
     eyeColor: 'amber',
     accessory: 'none',
-    playerName: 'Kattenbaas',
+    playerName: 'Player',
     soundEnabled: true,
     highscores: [],
   };
@@ -73,6 +73,8 @@ export function loadHangerState(deviceId: string): HangerState {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return base;
     const parsed = JSON.parse(raw) as Partial<HangerState>;
+    const rawName = typeof parsed.playerName === 'string' ? parsed.playerName.trim() : '';
+    const resolvedName = rawName && rawName !== 'Kattenbaas' ? rawName : 'Player';
     return {
       deviceId,
       apiBaseUrl:
@@ -82,10 +84,7 @@ export function loadHangerState(deviceId: string): HangerState {
       colorId: typeof parsed.colorId === 'number' ? parsed.colorId : 0,
       eyeColor: parsed.eyeColor || 'amber',
       accessory: parsed.accessory || 'none',
-      playerName:
-        typeof parsed.playerName === 'string' && parsed.playerName.trim()
-          ? parsed.playerName.trim()
-          : 'Kattenbaas',
+      playerName: resolvedName,
       soundEnabled: parsed.soundEnabled !== false,
       highscores: Array.isArray(parsed.highscores) ? parsed.highscores : [],
     };
@@ -109,7 +108,7 @@ export function recordHangerScore(
   const prevBest = state.highscores.length > 0 ? state.highscores[0].timeSec : 0;
   const entry: HangerHighscore = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    playerName: state.playerName.trim() || 'Kattenbaas',
+    playerName: state.playerName.trim() || 'Player',
     timeSec: Math.round(timeSec * 100) / 100,
     colorId: state.colorId,
     eyeColor: state.eyeColor,
