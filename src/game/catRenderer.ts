@@ -11,6 +11,8 @@ export interface CatRenderOptions {
   phase?: number;
   /** Used for climbing alternating paw reach (-1..1) */
   climbStep?: number;
+  /** Effort/strain level (0..1) for intense hanging moments */
+  effort?: number;
 }
 
 /**
@@ -24,7 +26,7 @@ export function drawCartoonCat(
   size: number,
   opts: CatRenderOptions
 ): void {
-  const { color, eyeColor, accessory, pose, phase = 0, climbStep = 0 } = opts;
+  const { color, eyeColor, accessory, pose, phase = 0, climbStep = 0, effort = 0 } = opts;
   const s = size;
   const lineW = Math.max(1.8, s * 0.08);
   const eyeHex = getEyeHex(eyeColor);
@@ -35,7 +37,7 @@ export function drawCartoonCat(
   ctx.lineCap = 'round';
 
   // Tail behind body
-  drawTail(ctx, s, lineW, color, pose, phase);
+  drawTail(ctx, s, lineW, color, pose, phase, effort);
 
   // Legs / Hind paws
   drawLegs(ctx, s, lineW, color, pose, climbStep, phase);
@@ -49,6 +51,12 @@ export function drawCartoonCat(
   ctx.ellipse(0, s * 0.92, s * 0.66, s * 0.78, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+
+  // Subtle torso highlight
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+  ctx.beginPath();
+  ctx.ellipse(-s * 0.16, s * 0.76, s * 0.28, s * 0.44, -0.2, 0, Math.PI * 2);
+  ctx.fill();
 
   // Belly patch
   ctx.fillStyle = color.belly;
@@ -66,12 +74,28 @@ export function drawCartoonCat(
   }
 
   // Head
-  const headTilt = pose === 'falling' ? Math.sin(phase * 6) * 0.14 : pose === 'swinging' ? Math.sin(phase) * 0.06 : 0;
+  const headTilt =
+    pose === 'falling'
+      ? Math.sin(phase * 6) * 0.14
+      : pose === 'swinging'
+      ? Math.sin(phase) * (0.06 + effort * 0.05)
+      : Math.sin(phase * 0.7) * 0.025;
   ctx.save();
   ctx.rotate(headTilt);
 
+  // Periodic cute ear twitch
+  const twitchWave = Math.sin(phase * 1.9) * Math.sin(phase * 0.47);
+  const rightEarTwitch = twitchWave > 0.86 ? (twitchWave - 0.86) * 1.8 : 0;
+  const leftEarTwitch = twitchWave < -0.88 ? (-twitchWave - 0.88) * 1.5 : 0;
+
   // Ears
   for (const side of [-1, 1]) {
+    const earRot = side === 1 ? rightEarTwitch : -leftEarTwitch;
+    ctx.save();
+    ctx.translate(side * s * 0.55, -s * 0.55);
+    ctx.rotate(earRot);
+    ctx.translate(-side * s * 0.55, s * 0.55);
+
     ctx.beginPath();
     ctx.moveTo(side * s * 0.3, -s * 0.55);
     ctx.lineTo(side * s * 0.88, -s * 1.18);
@@ -91,6 +115,7 @@ export function drawCartoonCat(
     ctx.closePath();
     ctx.fillStyle = color.earInner;
     ctx.fill();
+    ctx.restore();
   }
 
   // Head circle
@@ -102,6 +127,12 @@ export function drawCartoonCat(
   ctx.lineWidth = lineW;
   ctx.stroke();
 
+  // Subtle head sheen
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+  ctx.beginPath();
+  ctx.ellipse(-s * 0.26, -s * 0.45, s * 0.35, s * 0.18, -0.35, 0, Math.PI * 2);
+  ctx.fill();
+
   // Forehead tabby stripes
   ctx.strokeStyle = color.stripe;
   ctx.lineWidth = Math.max(1.5, s * 0.085);
@@ -110,6 +141,15 @@ export function drawCartoonCat(
     ctx.moveTo(dx * s, -s * 0.84);
     ctx.lineTo(dx * s * 0.85, -s * 0.58);
     ctx.stroke();
+  }
+
+  // Cute rosy cheeks when swinging hard
+  if (effort > 0.25) {
+    ctx.fillStyle = `rgba(251, 113, 133, ${Math.min(0.45, effort * 0.45)})`;
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.52, s * 0.16, s * 0.16, s * 0.09, 0, 0, Math.PI * 2);
+    ctx.ellipse(s * 0.52, s * 0.16, s * 0.16, s * 0.09, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // Cute muzzle cheeks
@@ -121,6 +161,7 @@ export function drawCartoonCat(
 
   // Eyes
   const blinking = pose === 'hanging' && Math.sin(phase * 0.7) > 0.96;
+  const straining = pose === 'swinging' && effort > 0.55;
   for (const side of [-1, 1]) {
     const ex = side * s * 0.36;
     const ey = -s * 0.1;
@@ -130,6 +171,21 @@ export function drawCartoonCat(
       ctx.beginPath();
       ctx.moveTo(ex - s * 0.14, ey);
       ctx.lineTo(ex + s * 0.14, ey);
+      ctx.stroke();
+    } else if (straining) {
+      // Determined >< eyes at high effort!
+      ctx.strokeStyle = color.outline;
+      ctx.lineWidth = lineW * 1.1;
+      ctx.beginPath();
+      if (side === -1) {
+        ctx.moveTo(ex - s * 0.12, ey - s * 0.1);
+        ctx.lineTo(ex + s * 0.1, ey);
+        ctx.lineTo(ex - s * 0.12, ey + s * 0.1);
+      } else {
+        ctx.moveTo(ex + s * 0.12, ey - s * 0.1);
+        ctx.lineTo(ex - s * 0.1, ey);
+        ctx.lineTo(ex + s * 0.12, ey + s * 0.1);
+      }
       ctx.stroke();
     } else {
       const eyeR = pose === 'falling' ? s * 0.2 : s * 0.17;
@@ -203,6 +259,13 @@ export function drawCartoonCat(
     ctx.ellipse(0, s * 0.33, s * 0.12, s * 0.16, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+  } else if (straining) {
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.18, s * 0.27);
+    ctx.lineTo(-s * 0.06, s * 0.22);
+    ctx.lineTo(s * 0.06, s * 0.27);
+    ctx.lineTo(s * 0.18, s * 0.22);
+    ctx.stroke();
   } else {
     ctx.beginPath();
     ctx.moveTo(0, s * 0.16);
@@ -234,21 +297,25 @@ function drawTail(
   lineW: number,
   color: CatColor,
   pose: CatPose,
-  phase: number
+  phase: number,
+  effort: number
 ): void {
-  const wag = pose === 'swinging' ? Math.sin(phase * 2.2) * 0.45 : Math.sin(phase * 1.8) * 0.25;
+  const speed = pose === 'swinging' ? 2.6 + effort * 2.2 : pose === 'falling' ? 5.5 : 1.8;
+  const amp = pose === 'swinging' ? 0.52 + effort * 0.32 : pose === 'falling' ? 0.7 : 0.28;
+  const wag = Math.sin(phase * speed) * amp;
+  const wagTip = Math.sin(phase * speed - 0.7) * amp * 1.2;
   ctx.save();
   ctx.strokeStyle = color.outline;
   ctx.lineWidth = s * 0.3;
   ctx.beginPath();
   ctx.moveTo(s * 0.45, s * 1.35);
   ctx.bezierCurveTo(
-    s * (1.2 + wag * 0.4),
+    s * (1.2 + wag * 0.45),
     s * 1.25,
-    s * (1.35 + wag * 0.7),
+    s * (1.38 + wagTip * 0.75),
     s * 0.55,
-    s * (0.95 + wag * 0.8),
-    s * 0.38
+    s * (0.95 + wagTip * 0.9),
+    s * 0.34
   );
   ctx.stroke();
 

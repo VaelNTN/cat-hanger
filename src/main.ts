@@ -31,6 +31,7 @@ let optionsFromPlay = false;
 let stage: HangerStage | null = null;
 let homeAnimId: number | null = null;
 let hsPollInterval: number | null = null;
+let resultTimeoutId: number | null = null;
 let hsTapCount = 0;
 let hsTapTimer: number | null = null;
 
@@ -299,7 +300,7 @@ function startHomePreview(): void {
       homeAnimId = null;
       return;
     }
-    const dt = (now - last) / 1000;
+    const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
     last = now;
     phase += dt * 2;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -323,7 +324,15 @@ function stopHomePreview(): void {
   }
 }
 
+function clearResultTimeout(): void {
+  if (resultTimeoutId !== null) {
+    window.clearTimeout(resultTimeoutId);
+    resultTimeoutId = null;
+  }
+}
+
 function startGameStage(): void {
+  clearResultTimeout();
   document.getElementById('result-overlay')!.classList.add('hidden');
   document.getElementById('timer-value')!.textContent = '0.00 s';
   document.getElementById('timer-status')!.textContent = 'Tap and hold the cat!';
@@ -371,7 +380,9 @@ function startGameStage(): void {
           accessory: state.accessory,
         });
       }
-      window.setTimeout(() => {
+      clearResultTimeout();
+      resultTimeoutId = window.setTimeout(() => {
+        resultTimeoutId = null;
         if (currentScreen !== 'game') return;
         document.getElementById('result-time')!.textContent = `${elapsed.toFixed(2)} s`;
         document.getElementById('result-badge')!.textContent = isNewBest
@@ -385,6 +396,7 @@ function startGameStage(): void {
 }
 
 function stopGameStage(): void {
+  clearResultTimeout();
   stage?.stop();
 }
 
@@ -611,6 +623,7 @@ function wireEvents(): void {
   });
 
   document.getElementById('btn-retry')!.addEventListener('click', () => {
+    clearResultTimeout();
     soundFX.playUiTap();
     document.getElementById('result-overlay')!.classList.add('hidden');
     document.getElementById('timer-value')!.textContent = '0.00 s';
