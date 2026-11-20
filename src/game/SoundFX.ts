@@ -86,6 +86,44 @@ class SoundFXEngine {
     osc.start(now);
     osc.stop(now + 0.08);
   }
+
+  public playTreatBoost(perfect = true): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const notes = perfect ? [587, 784, 1046] : [494, 659];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + i * 0.055);
+      gain.gain.setValueAtTime(0.12, now + i * 0.055);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.055 + 0.16);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + i * 0.055);
+      osc.stop(now + i * 0.055 + 0.17);
+    });
+  }
+
+  public playWindGust(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(340, now + 0.18);
+    osc.frequency.exponentialRampToValueAtTime(160, now + 0.42);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.06, now + 0.14);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.44);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.45);
+  }
 }
 
 export const soundFX = new SoundFXEngine();

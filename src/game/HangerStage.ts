@@ -5,8 +5,10 @@ export type HangerPhase = 'ready' | 'holding' | 'falling' | 'finished';
 
 export interface HangerStageCallbacks {
   onStartHold: () => void;
-  onTick?: (elapsedSeconds: number) => void;
-  onRelease: (elapsedSeconds: number) => void;
+  onTick?: (elapsedSeconds: number, boostsHit: number, bonusScore: number) => void;
+  onTreatBoost?: (perfect: boolean, boostsHit: number, bonusScore: number) => void;
+  onWindGust?: (dir: -1 | 1) => void;
+  onRelease: (elapsedSeconds: number, reason: 'release' | 'stamina', boostsHit: number, bonusScore: number) => void;
   onMissTap: () => void;
 }
 
@@ -19,7 +21,7 @@ interface SparkParticle {
   color: string;
   life: number;
   maxLife: number;
-  kind: 'confetti' | 'dust' | 'sweat' | 'star';
+  kind: 'confetti' | 'dust' | 'sweat' | 'star' | 'leaf';
   rot: number;
   vRot: number;
 }
@@ -34,7 +36,23 @@ interface MilestoneRing {
   label: string;
 }
 
+interface FloatingPopup {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  life: number;
+  maxLife: number;
+}
+
+interface RhythmTreat {
+  progress: number; // 0 -> 1 shrinking toward sweet spot (~0.62..0.88)
+  duration: number;
+  resolved: boolean;
+}
+
 const CONFETTI_COLORS = ['#fbbf24', '#fb7185', '#38bdf8', '#34d399', '#c084fc', '#fde047'];
+const LEAF_COLORS = ['#f472b6', '#fb923c', '#fda4af', '#fbbf24'];
 
 export class HangerStage {
   private canvas: HTMLCanvasElement;
@@ -48,6 +66,8 @@ export class HangerStage {
   private height = 0;
   private dpr = 1;
   private active = false;
+  private paused = false;
+  private resumeHoldPending = false;
   private rafId: number | null = null;
   private lastTime = 0;
 
@@ -55,14 +75,29 @@ export class HangerStage {
   private animClock = 0;
   private holdStartMs = 0;
   private holdElapsed = 0;
+  private stamina = 1;
+  private boostsHit = 0;
+  private bonusScore = 0;
   private activePointerId: number | null = null;
   private nextMilestoneSec = 5;
 
+  // Dynamic wind gust state
+  private windDir: -1 | 1 = 1;
+  private windStrength = 0; // 0..1
+  private windTimer = 0;
+  private nextWindAt = 3.0;
+  private windCalmTimer = 0;
+  private leafSpawnTimer = 0;
+
+  // Sweet-spot Rhythm Grip Boost / Treat Catch state
+  private activeTreat: RhythmTreat | null = null;
+  private nextTreatAt = 2.4;
+
   // Rope, bar flex & swing physics
   private anchorX = 0;
-  private anchorY = 30;
+  private anchorY = 26;
   private barFlex = 0;
-  private ropeLength = 190;
+  private ropeLength = 150;
   private swingAngle = 0;
   private swingPhase = 0;
 
@@ -73,11 +108,12 @@ export class HangerStage {
   private fallVy = 0;
   private fallRot = 0;
   private fallSpin = 0;
-  private catSize = 32;
+  private catSize = 30;
 
   // Juice & particles
   private particles: SparkParticle[] = [];
   private rings: MilestoneRing[] = [];
+  private popups: FloatingPopup[] = [];
   private sweatTimer = 0;
   private hitFlash = 0;
 
@@ -98,6 +134,7 @@ export class HangerStage {
     this.handleResize = this.handleResize.bind(this);
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
+    this.onKeyDown = this.onKeyDown.bind(this);
     this.onContextMenu = this.onContextMenu.bind(this);
     this.onBlurOrHide = this.onBlurOrHide.bind(this);
     this.loop = this.loop.bind(this);
@@ -113,11 +150,45 @@ export class HangerStage {
     this.accessory = opts.accessory;
   }
 
+  public isPaused(): boolean {
+    return this.paused;
+  }
+
+  public isFinished(): boolean {
+    return this.phase === 'falling' || this.phase === 'finished';
+  }
+
+  public setPaused(next: boolean): void {
+    if (this.paused === next) return;
+    this.paused = next;
+    if (next) {
+      if (this.phase === 'holding') {
+        this.releasePointerCaptureSafe();
+        this.activePointerId = null;
+        this.resumeHoldPending = true;
+      }
+    } else {
+      this.lastTime = performance.now();
+    }
+  }
+
   public resetRound(): void {
     this.releasePointerCaptureSafe();
+    this.paused = false;
+    this.resumeHoldPending = false;
     this.phase = 'ready';
     this.holdElapsed = 0;
+    this.stamina = 1;
+    this.boostsHit = 0;
+    this.bonusScore = 0;
     this.nextMilestoneSec = 5;
+    this.windDir = 1;
+    this.windStrength = 0;
+    this.windTimer = 0;
+    this.nextWindAt = 3.0;
+    this.windCalmTimer = 0;
+    this.activeTreat = null;
+    this.nextTreatAt = 2.4;
     this.barFlex = 0;
     this.swingAngle = 0;
     this.swingPhase = 0;
@@ -127,6 +198,7 @@ export class HangerStage {
     this.activePointerId = null;
     this.particles = [];
     this.rings = [];
+    this.popups = [];
     this.sweatTimer = 0;
     this.hitFlash = 0;
     this.updateCatPosFromAngle(0);
@@ -141,6 +213,7 @@ export class HangerStage {
     this.canvas.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('pointercancel', this.onPointerUp);
+    window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('blur', this.onBlurOrHide);
     document.addEventListener('visibilitychange', this.onBlurOrHide);
     this.lastTime = performance.now();
@@ -149,6 +222,8 @@ export class HangerStage {
 
   public stop(): void {
     this.active = false;
+    this.paused = false;
+    this.resumeHoldPending = false;
     this.releasePointerCaptureSafe();
     this.activePointerId = null;
     if (this.phase === 'holding') {
@@ -159,6 +234,7 @@ export class HangerStage {
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointercancel', this.onPointerUp);
+    window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('blur', this.onBlurOrHide);
     document.removeEventListener('visibilitychange', this.onBlurOrHide);
     if (this.rafId !== null) {
@@ -185,14 +261,10 @@ export class HangerStage {
 
   private onBlurOrHide(): void {
     if (document.hidden || !document.hasFocus()) {
-      this.forceReleaseIfHolding();
+      if (this.phase === 'holding' && !this.paused && !this.resumeHoldPending) {
+        this.finishHold('release');
+      }
     }
-  }
-
-  private forceReleaseIfHolding(): void {
-    if (this.phase !== 'holding') return;
-    const pid = this.activePointerId;
-    this.finishHold(pid);
   }
 
   private handleResize(): void {
@@ -205,11 +277,13 @@ export class HangerStage {
     this.canvas.height = Math.round(rect.height * this.dpr);
 
     this.anchorX = this.width * 0.5;
-    this.anchorY = 30;
-    this.catSize = Math.max(26, Math.min(38, Math.min(this.width, this.height) * 0.085));
-    this.ropeLength = Math.max(115, Math.min(this.height * 0.42, 230));
-    if (this.phase === 'ready') {
-      this.updateCatPosFromAngle(0);
+    this.anchorY = 26;
+    // Scale catSize and ropeLength so hanging cat stays 100% visible even on 360px height landscape screens
+    this.catSize = Math.max(19, Math.min(36, Math.min(this.width * 0.088, this.height * 0.095)));
+    const maxRopeLen = Math.max(42, this.height - this.anchorY - this.catSize * 2.95 - 18);
+    this.ropeLength = Math.max(42, Math.min(205, Math.min(this.height * 0.36, maxRopeLen)));
+    if (this.phase === 'ready' || this.phase === 'holding') {
+      this.updateCatPosFromAngle(this.swingAngle);
     }
   }
 
@@ -222,19 +296,90 @@ export class HangerStage {
   private isPointOnCat(x: number, y: number): boolean {
     const dx = x - this.catX;
     const dy = y - (this.catY + this.catSize * 0.35);
-    const hitR = this.catSize * 1.95;
+    const hitR = Math.max(54, this.catSize * 2.05);
     return Math.hypot(dx, dy) <= hitR;
+  }
+
+  private tryTriggerGripBoost(): boolean {
+    if (this.phase !== 'holding' || this.paused || this.resumeHoldPending) return false;
+    if (!this.activeTreat || this.activeTreat.resolved) return false;
+
+    const p = this.activeTreat.progress;
+    this.activeTreat.resolved = true;
+    this.activeTreat = null;
+
+    const perfect = p >= 0.56 && p <= 0.92;
+    const staminaGain = perfect ? 0.34 : 0.2;
+    const secBonus = perfect ? 1.5 : 0.75;
+    const pts = perfect ? 150 : 75;
+
+    this.stamina = Math.min(1, this.stamina + staminaGain);
+    this.holdElapsed += secBonus;
+    this.boostsHit += 1;
+    this.bonusScore += pts;
+    this.windCalmTimer = 1.25;
+    this.hitFlash = 0.85;
+
+    this.spawnBurst(this.catX, this.catY, perfect ? 18 : 10, 'star');
+    this.spawnBurst(this.catX, this.catY, 10, 'confetti');
+    this.popups.push({
+      x: Math.max(84, Math.min(this.width - 84, this.catX)),
+      y: Math.max(48, this.catY - this.catSize * 1.1),
+      text: perfect ? `✨ PERFECT GRIP! +${secBonus.toFixed(1)}s` : `🐟 GOOD BOOST! +${secBonus.toFixed(2)}s`,
+      color: perfect ? '#fde047' : '#34d399',
+      life: 1.15,
+      maxLife: 1.15,
+    });
+    this.callbacks.onTreatBoost?.(perfect, this.boostsHit, this.bonusScore);
+    this.callbacks.onTick?.(this.holdElapsed, this.boostsHit, this.bonusScore);
+    return true;
+  }
+
+  private onKeyDown(ev: KeyboardEvent): void {
+    if (this.paused) return;
+    if (ev.code === 'Space' || ev.code === 'KeyF') {
+      if (this.phase === 'holding' && !this.resumeHoldPending) {
+        ev.preventDefault();
+        this.tryTriggerGripBoost();
+      }
+    }
   }
 
   private onPointerDown(ev: PointerEvent): void {
     ev.preventDefault();
+    if (this.paused) return;
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-    if (this.phase !== 'ready' || this.activePointerId !== null) return;
 
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const x = ev.clientX - rect.left;
     const y = ev.clientY - rect.top;
+
+    // 2nd finger tap during hold triggers sweet-spot Grip Boost / Treat Catch
+    if (this.phase === 'holding' && !this.resumeHoldPending && this.activePointerId !== null && ev.pointerId !== this.activePointerId) {
+      this.tryTriggerGripBoost();
+      return;
+    }
+
+    // Resume hold after Pause
+    if (this.phase === 'holding' && this.resumeHoldPending && this.activePointerId === null) {
+      if (!this.isPointOnCat(x, y)) {
+        this.callbacks.onMissTap();
+        return;
+      }
+      this.activePointerId = ev.pointerId;
+      this.resumeHoldPending = false;
+      try {
+        this.canvas.setPointerCapture(ev.pointerId);
+      } catch {
+        // Ignore
+      }
+      this.hitFlash = 0.7;
+      this.callbacks.onStartHold();
+      return;
+    }
+
+    if (this.phase !== 'ready' || this.activePointerId !== null) return;
 
     if (!this.isPointOnCat(x, y)) {
       this.callbacks.onMissTap();
@@ -251,7 +396,15 @@ export class HangerStage {
     this.phase = 'holding';
     this.holdStartMs = performance.now();
     this.holdElapsed = 0;
+    this.stamina = 1;
+    this.boostsHit = 0;
+    this.bonusScore = 0;
     this.nextMilestoneSec = 5;
+    this.nextWindAt = 3.0;
+    this.nextTreatAt = 2.4;
+    this.windStrength = 0;
+    this.windTimer = 0;
+    this.activeTreat = null;
     this.swingPhase = 0.25;
     this.hitFlash = 1;
     this.spawnBurst(this.catX, this.catY - this.catSize * 0.5, 10, 'dust');
@@ -259,31 +412,30 @@ export class HangerStage {
   }
 
   private onPointerUp(ev: PointerEvent): void {
+    if (this.paused || this.resumeHoldPending) return;
     if (this.phase !== 'holding' || ev.pointerId !== this.activePointerId) return;
-    this.finishHold(ev.pointerId);
+    this.finishHold('release');
   }
 
-  private finishHold(_pointerId: number | null): void {
+  private finishHold(reason: 'release' | 'stamina'): void {
     this.releasePointerCaptureSafe();
     this.activePointerId = null;
+    this.resumeHoldPending = false;
 
-    // Combine clamped accumulated time with sub-frame fallback so quick taps work
     const frameFallback = Math.min(0.05, Math.max(0.01, (performance.now() - this.holdStartMs) / 1000));
     this.holdElapsed = Math.max(0.01, this.holdElapsed > 0 ? this.holdElapsed : frameFallback);
     this.phase = 'falling';
 
-    // Launch cat with tangential swing velocity + gravity
     const angularSpeed = Math.cos(this.swingPhase) * 2.5;
-    this.fallVx = Math.cos(this.swingAngle) * angularSpeed * 120;
+    this.fallVx = Math.cos(this.swingAngle) * angularSpeed * 120 + this.windDir * this.windStrength * 110;
     this.fallVy = -Math.abs(Math.sin(this.swingAngle)) * 60;
     this.fallRot = -this.swingAngle;
     this.fallSpin = (this.fallVx >= 0 ? 1 : -1) * 4.2;
 
-    // Playful dust & confetti burst on release
     this.spawnBurst(this.catX, this.catY - this.catSize * 0.9, 14, 'dust');
     this.spawnBurst(this.catX, this.catY, 18, 'confetti');
 
-    this.callbacks.onRelease(this.holdElapsed);
+    this.callbacks.onRelease(this.holdElapsed, reason, this.boostsHit, this.bonusScore);
   }
 
   private spawnBurst(
@@ -306,8 +458,8 @@ export class HangerStage {
           kind === 'dust'
             ? 'rgba(254, 243, 199, 0.85)'
             : kind === 'star'
-            ? '#fde047'
-            : CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+              ? '#fde047'
+              : CONFETTI_COLORS[i % CONFETTI_COLORS.length],
         life: maxLife,
         maxLife,
         kind,
@@ -315,6 +467,23 @@ export class HangerStage {
         vRot: (Math.random() - 0.5) * 10,
       });
     }
+  }
+
+  private spawnWindLeaf(): void {
+    const startX = this.windDir > 0 ? -12 : this.width + 12;
+    this.particles.push({
+      x: startX,
+      y: 36 + Math.random() * Math.max(60, this.height - 70),
+      vx: this.windDir * (190 + Math.random() * 140),
+      vy: 18 + (Math.random() - 0.5) * 45,
+      size: 5 + Math.random() * 4,
+      color: LEAF_COLORS[Math.floor(Math.random() * LEAF_COLORS.length)],
+      life: 2.2,
+      maxLife: 2.2,
+      kind: 'leaf',
+      rot: Math.random() * Math.PI * 2,
+      vRot: (Math.random() - 0.5) * 9,
+    });
   }
 
   private spawnSweatDrop(): void {
@@ -339,12 +508,12 @@ export class HangerStage {
       x: this.catX,
       y: this.catY + this.catSize * 0.3,
       radius: this.catSize * 0.7,
-      maxRadius: this.catSize * 3.4,
+      maxRadius: this.catSize * 3.2,
       life: 0.9,
       maxLife: 0.9,
       label: `${sec}s!`,
     });
-    this.spawnBurst(this.catX, this.catY, sec % 10 === 0 ? 24 : 14, 'confetti');
+    this.spawnBurst(this.catX, this.catY, sec % 10 === 0 ? 22 : 12, 'confetti');
     this.spawnBurst(this.catX, this.catY - this.catSize * 0.4, 8, 'star');
   }
 
@@ -353,7 +522,9 @@ export class HangerStage {
     const dt = Math.min(0.05, Math.max(0.001, (now - this.lastTime) / 1000));
     this.lastTime = now;
 
-    this.update(dt);
+    if (!this.paused) {
+      this.update(dt);
+    }
     this.render();
 
     this.rafId = requestAnimationFrame(this.loop);
@@ -363,34 +534,81 @@ export class HangerStage {
     this.animClock += dt;
     this.hitFlash = Math.max(0, this.hitFlash - dt * 4);
 
-    if (this.phase === 'ready') {
+    if (this.phase === 'ready' || this.resumeHoldPending) {
       this.swingAngle = Math.sin(this.animClock * 1.4) * 0.04;
       this.barFlex += (4 - this.barFlex) * Math.min(1, dt * 8);
       this.updateCatPosFromAngle(this.swingAngle);
     } else if (this.phase === 'holding') {
       this.holdElapsed += dt;
-      this.callbacks.onTick?.(this.holdElapsed);
+
+      // Dynamic Wind Gusts
+      if (this.windCalmTimer > 0) {
+        this.windCalmTimer = Math.max(0, this.windCalmTimer - dt);
+        this.windStrength = Math.max(0, this.windStrength - dt * 1.4);
+      } else if (this.windTimer > 0) {
+        this.windTimer -= dt;
+        const targetWind = this.windTimer > 0.5 ? 1 : this.windTimer / 0.5;
+        this.windStrength += (targetWind - this.windStrength) * Math.min(1, dt * 5);
+        this.leafSpawnTimer -= dt;
+        if (this.leafSpawnTimer <= 0) {
+          this.spawnWindLeaf();
+          this.leafSpawnTimer = 0.09 + Math.random() * 0.07;
+        }
+      } else {
+        this.windStrength = Math.max(0, this.windStrength - dt * 1.2);
+        if (this.holdElapsed >= this.nextWindAt) {
+          this.windDir = Math.random() > 0.5 ? 1 : -1;
+          this.windTimer = 2.6 + Math.random() * 1.3;
+          this.nextWindAt = this.holdElapsed + 4.4 + Math.random() * 2.2;
+          this.callbacks.onWindGust?.(this.windDir);
+        }
+      }
+
+      // Sweet-Spot Rhythm Grip Boost / Treat Catch
+      if (!this.activeTreat && this.holdElapsed >= this.nextTreatAt) {
+        this.activeTreat = {
+          progress: 0,
+          duration: 1.65,
+          resolved: false,
+        };
+        this.nextTreatAt = this.holdElapsed + 3.4 + Math.random() * 1.4;
+      }
+      if (this.activeTreat && !this.activeTreat.resolved) {
+        this.activeTreat.progress += dt / this.activeTreat.duration;
+        if (this.activeTreat.progress >= 1) {
+          this.activeTreat = null;
+        }
+      }
+
+      // Grip stamina drains steadily (slightly faster during wind gusts)
+      const drainRate = 0.042 + this.windStrength * 0.022 + Math.min(0.028, this.holdElapsed * 0.001);
+      this.stamina = Math.max(0, this.stamina - drainRate * dt);
+      this.callbacks.onTick?.(this.holdElapsed, this.boostsHit, this.bonusScore);
+
+      if (this.stamina <= 0) {
+        this.finishHold('stamina');
+        return;
+      }
 
       while (this.holdElapsed >= this.nextMilestoneSec) {
         this.triggerMilestone(this.nextMilestoneSec);
         this.nextMilestoneSec += 5;
       }
 
-      const speed = 2.9 + Math.min(2.8, this.holdElapsed * 0.08);
-      const maxAngle = Math.min(0.85, 0.42 + this.holdElapsed * 0.025);
+      const speed = 2.8 + Math.min(2.4, this.holdElapsed * 0.07);
+      const maxAngle = Math.min(0.75, 0.36 + this.holdElapsed * 0.02);
       this.swingPhase += dt * speed;
-      this.swingAngle = Math.sin(this.swingPhase) * maxAngle;
+      const windBias = this.windDir * this.windStrength * 0.36;
+      this.swingAngle = Math.max(-0.92, Math.min(0.92, Math.sin(this.swingPhase) * maxAngle + windBias));
 
-      // Bar flexes slightly under dynamic swing load
-      const targetFlex = 7 + Math.abs(Math.cos(this.swingAngle)) * 4 + Math.min(4, this.holdElapsed * 0.15);
+      const targetFlex = 6 + Math.abs(Math.cos(this.swingAngle)) * 4 + Math.min(4, this.holdElapsed * 0.14);
       this.barFlex += (targetFlex - this.barFlex) * Math.min(1, dt * 10);
 
-      // Sweat drops appear as seconds climb
-      if (this.holdElapsed >= 4) {
+      if (this.holdElapsed >= 3.5 || this.stamina < 0.42) {
         this.sweatTimer -= dt;
         if (this.sweatTimer <= 0) {
           this.spawnSweatDrop();
-          this.sweatTimer = Math.max(0.18, 0.72 - this.holdElapsed * 0.02);
+          this.sweatTimer = Math.max(0.18, 0.65 - (1 - this.stamina) * 0.4);
         }
       }
 
@@ -411,7 +629,6 @@ export class HangerStage {
       this.barFlex += (0 - this.barFlex) * Math.min(1, dt * 10);
     }
 
-    // Update particles
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.life -= dt;
@@ -421,6 +638,8 @@ export class HangerStage {
       }
       if (p.kind === 'confetti' || p.kind === 'sweat') {
         p.vy += 380 * dt;
+      } else if (p.kind === 'leaf') {
+        p.vy += Math.sin(this.animClock * 7 + p.rot) * 90 * dt;
       } else {
         p.vx *= Math.pow(0.25, dt);
         p.vy *= Math.pow(0.25, dt);
@@ -430,7 +649,6 @@ export class HangerStage {
       p.rot += p.vRot * dt;
     }
 
-    // Update milestone rings
     for (let i = this.rings.length - 1; i >= 0; i--) {
       const r = this.rings[i];
       r.life -= dt;
@@ -441,6 +659,13 @@ export class HangerStage {
       const prog = 1 - r.life / r.maxLife;
       r.radius = this.catSize * 0.7 + (r.maxRadius - this.catSize * 0.7) * (1 - Math.pow(1 - prog, 2));
     }
+
+    for (let i = this.popups.length - 1; i >= 0; i--) {
+      const pop = this.popups[i];
+      pop.life -= dt;
+      pop.y -= 36 * dt;
+      if (pop.life <= 0) this.popups.splice(i, 1);
+    }
   }
 
   private render(): void {
@@ -449,54 +674,65 @@ export class HangerStage {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
 
-    // Rich sunset rooftop & terrace backdrop
     this.drawBackdrop(ctx);
 
-    // Wooden pergola rafter at very top
-    const beamGrad = ctx.createLinearGradient(0, 0, 0, 18);
+    // Wind streaks across sky during gusts
+    if (this.windStrength > 0.12) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(253, 224, 71, ${this.windStrength * 0.25})`;
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 6; i++) {
+        const y = 46 + ((i * 59) % Math.max(80, this.height - 70));
+        const shift = ((this.animClock * 420 * this.windDir + i * 130) % (this.width + 120) + (this.width + 120)) % (this.width + 120) - 60;
+        ctx.beginPath();
+        ctx.moveTo(shift, y);
+        ctx.lineTo(shift + this.windDir * 52 * this.windStrength, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Wooden pergola rafter at top
+    const beamGrad = ctx.createLinearGradient(0, 0, 0, 16);
     beamGrad.addColorStop(0, '#92400e');
     beamGrad.addColorStop(0.55, '#78350f');
     beamGrad.addColorStop(1, '#451a03');
     ctx.fillStyle = beamGrad;
-    ctx.fillRect(0, 0, this.width, 16);
+    ctx.fillRect(0, 0, this.width, 14);
     ctx.fillStyle = 'rgba(251, 191, 36, 0.28)';
     ctx.fillRect(0, 2, this.width, 2);
 
-    // Side mounting brackets for metallic bar
     ctx.fillStyle = '#334155';
-    ctx.fillRect(8, 16, 18, 22);
-    ctx.fillRect(this.width - 26, 16, 18, 22);
+    ctx.fillRect(8, 14, 16, 20);
+    ctx.fillRect(this.width - 24, 14, 16, 20);
     ctx.fillStyle = '#64748b';
-    ctx.fillRect(10, 18, 5, 18);
-    ctx.fillRect(this.width - 24, 18, 5, 18);
+    ctx.fillRect(10, 16, 4, 16);
+    ctx.fillRect(this.width - 22, 16, 4, 16);
 
-    // Shiny metallic bar that flexes slightly under weight!
-    const barY = 26;
+    const barY = this.anchorY;
     const flexY = barY + this.barFlex;
     ctx.save();
     ctx.lineCap = 'round';
-    // Bar shadow
     ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
-    ctx.lineWidth = 10;
+    ctx.lineWidth = 9;
     ctx.beginPath();
     ctx.moveTo(18, barY + 2);
     ctx.quadraticCurveTo(this.anchorX, flexY + 2, this.width - 18, barY + 2);
     ctx.stroke();
 
-    // Metallic body gradient
     const metalGrad = ctx.createLinearGradient(0, barY - 5, 0, flexY + 6);
     metalGrad.addColorStop(0, '#f8fafc');
     metalGrad.addColorStop(0.35, '#94a3b8');
     metalGrad.addColorStop(0.75, '#475569');
     metalGrad.addColorStop(1, '#cbd5e1');
     ctx.strokeStyle = metalGrad;
-    ctx.lineWidth = 8;
+    ctx.lineWidth = 7.5;
     ctx.beginPath();
     ctx.moveTo(18, barY);
     ctx.quadraticCurveTo(this.anchorX, flexY, this.width - 18, barY);
     ctx.stroke();
 
-    // Top specular highlight along metallic bar
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -505,47 +741,52 @@ export class HangerStage {
     ctx.stroke();
     ctx.restore();
 
-    // Anchor clamp & brass swivel ring at center flex point
     const clampedAnchorY = barY + this.barFlex * 0.5;
     ctx.fillStyle = '#fbbf24';
     ctx.strokeStyle = '#78350f';
-    ctx.lineWidth = 2.2;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.roundRect(this.anchorX - 14, clampedAnchorY - 8, 28, 14, 6);
+    ctx.roundRect(this.anchorX - 13, clampedAnchorY - 7, 26, 13, 6);
     ctx.fill();
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(this.anchorX, clampedAnchorY + 6, 8, 0, Math.PI * 2);
+    ctx.arc(this.anchorX, clampedAnchorY + 6, 7.5, 0, Math.PI * 2);
     ctx.fillStyle = '#fde68a';
     ctx.fill();
     ctx.strokeStyle = '#92400e';
     ctx.stroke();
 
-    // Thick braided rope from swivel ring to paw grip knot
     const ropeStartX = this.anchorX;
-    const ropeStartY = clampedAnchorY + 10;
+    const ropeStartY = clampedAnchorY + 9;
     const ropeEndX = this.anchorX + Math.sin(this.swingAngle) * this.ropeLength;
     const ropeEndY = clampedAnchorY + Math.cos(this.swingAngle) * this.ropeLength;
     this.drawBraidedRope(ctx, ropeStartX, ropeStartY, ropeEndX, ropeEndY);
 
-    // Knot
     ctx.fillStyle = '#92400e';
     ctx.strokeStyle = '#451a03';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(ropeEndX, ropeEndY, 8.5, 0, Math.PI * 2);
+    ctx.arc(ropeEndX, ropeEndY, 8, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = '#fbbf24';
     ctx.beginPath();
-    ctx.arc(ropeEndX - 2, ropeEndY - 2, 2.5, 0, Math.PI * 2);
+    ctx.arc(ropeEndX - 2, ropeEndY - 2, 2.3, 0, Math.PI * 2);
     ctx.fill();
 
-    // Pulsing grab circle when ready
-    if (this.phase === 'ready') {
+    // Grip Stamina & Wind Indicator pills (positioned cleanly below pergola on left & right!)
+    if (this.phase === 'holding') {
+      this.drawStaminaMeter(ctx);
+      if (this.windStrength > 0.15) {
+        this.drawWindArrowPill(ctx);
+      }
+    }
+
+    // Pulsing grab circle when ready or resuming from pause
+    if (this.phase === 'ready' || this.resumeHoldPending) {
       const pulse = Math.sin(this.animClock * 4.5);
-      ctx.strokeStyle = `rgba(251, 191, 36, ${0.58 + pulse * 0.2})`;
+      ctx.strokeStyle = `rgba(251, 191, 36, ${0.6 + pulse * 0.22})`;
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(
@@ -558,7 +799,53 @@ export class HangerStage {
       ctx.stroke();
     }
 
-    // Milestone golden rings & text
+    // Sweet-Spot Rhythm Grip Boost Ring around cat
+    if (this.phase === 'holding' && !this.resumeHoldPending && this.activeTreat && !this.activeTreat.resolved) {
+      const p = this.activeTreat.progress;
+      const inSweet = p >= 0.56 && p <= 0.92;
+      const targetR = this.catSize * 1.5;
+      const outerR = this.catSize * (3.1 - p * 1.85);
+      const cy = this.catY + this.catSize * 0.25;
+
+      ctx.save();
+      // Fixed sweet-spot target circle
+      ctx.strokeStyle = inSweet ? 'rgba(52, 211, 153, 0.95)' : 'rgba(251, 191, 36, 0.45)';
+      ctx.lineWidth = inSweet ? 4.5 : 2.5;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.arc(this.catX, cy, targetR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Shrinking rhythm ring
+      ctx.strokeStyle = inSweet ? '#fde047' : '#f472b6';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.arc(this.catX, cy, Math.max(targetR * 0.72, outerR), 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Prompt badge at bottom center of canvas
+      const prompt = inSweet ? '✨ TAP 2ND FINGER / [SPACE] NOW!' : '🐟 Rhythm Boost incoming...';
+      ctx.font = '900 12px system-ui, -apple-system, sans-serif';
+      const tw = ctx.measureText(prompt).width;
+      const bw = tw + 22;
+      const bx = this.width * 0.5 - bw / 2;
+      const by = this.height - 38;
+      ctx.fillStyle = inSweet ? 'rgba(16, 185, 129, 0.92)' : 'rgba(24, 15, 34, 0.85)';
+      ctx.strokeStyle = inSweet ? '#fde047' : '#f472b6';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, 25, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = inSweet ? '#042f2e' : '#fce7f3';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(prompt, this.width * 0.5, by + 12.5);
+      ctx.restore();
+    }
+
+    // Milestone rings
     for (const r of this.rings) {
       const alpha = Math.max(0, r.life / r.maxLife);
       ctx.save();
@@ -577,14 +864,16 @@ export class HangerStage {
       ctx.restore();
     }
 
-    // Cat with effort tremor & glow at high seconds
+    // Cat
     if (this.phase !== 'finished') {
-      const effort = this.phase === 'holding' ? Math.min(1, this.holdElapsed / 14) : 0;
-      const shakeAmp = this.phase === 'holding' && this.holdElapsed > 5 ? Math.min(3.2, (this.holdElapsed - 5) * 0.25) : 0;
+      const effort = this.phase === 'holding' ? Math.max(Math.min(1, this.holdElapsed / 14), 1 - this.stamina) : 0;
+      const shakeAmp =
+        this.phase === 'holding' && !this.resumeHoldPending && (this.holdElapsed > 5 || this.stamina < 0.35)
+          ? Math.min(3.2, Math.max((this.holdElapsed - 5) * 0.22, (0.35 - this.stamina) * 8))
+          : 0;
       const shakeX = shakeAmp > 0 ? Math.sin(this.animClock * 48) * shakeAmp : 0;
       const shakeY = shakeAmp > 0 ? Math.cos(this.animClock * 55) * shakeAmp * 0.6 : 0;
 
-      // Golden milestone aura at >= 10s
       if (this.phase === 'holding' && this.holdElapsed >= 10) {
         const auraPulse = 0.5 + 0.5 * Math.sin(this.animClock * 8);
         const auraGrad = ctx.createRadialGradient(
@@ -593,13 +882,13 @@ export class HangerStage {
           this.catSize * 0.4,
           this.catX,
           this.catY + this.catSize * 0.3,
-          this.catSize * 2.2
+          this.catSize * 2.1
         );
         auraGrad.addColorStop(0, `rgba(251, 191, 36, ${0.26 + auraPulse * 0.14})`);
         auraGrad.addColorStop(1, 'rgba(251, 191, 36, 0)');
         ctx.fillStyle = auraGrad;
         ctx.beginPath();
-        ctx.arc(this.catX, this.catY + this.catSize * 0.3, this.catSize * 2.2, 0, Math.PI * 2);
+        ctx.arc(this.catX, this.catY + this.catSize * 0.3, this.catSize * 2.1, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -615,8 +904,8 @@ export class HangerStage {
         this.phase === 'falling'
           ? 'falling'
           : this.phase === 'holding'
-          ? 'swinging'
-          : 'hanging';
+            ? 'swinging'
+            : 'hanging';
 
       drawCartoonCat(ctx, 0, 0, this.catSize, {
         color: this.color,
@@ -629,7 +918,6 @@ export class HangerStage {
       ctx.restore();
     }
 
-    // Wind / motion lines while swinging
     if (this.phase === 'holding' && Math.abs(Math.cos(this.swingPhase)) > 0.5) {
       ctx.save();
       ctx.strokeStyle = 'rgba(253, 224, 71, 0.38)';
@@ -637,17 +925,16 @@ export class HangerStage {
       ctx.lineCap = 'round';
       const dir = Math.cos(this.swingPhase) > 0 ? -1 : 1;
       for (let i = -1; i <= 1; i++) {
-        const ly = this.catY + i * 24;
-        const lx = this.catX + dir * 48;
+        const ly = this.catY + i * 20;
+        const lx = this.catX + dir * 44;
         ctx.beginPath();
         ctx.moveTo(lx, ly);
-        ctx.lineTo(lx + dir * 32, ly);
+        ctx.lineTo(lx + dir * 28, ly);
         ctx.stroke();
       }
       ctx.restore();
     }
 
-    // Render all particles (sweat drops, dust, confetti, stars)
     for (const p of this.particles) {
       const alpha = Math.max(0, p.life / p.maxLife);
       ctx.save();
@@ -660,6 +947,11 @@ export class HangerStage {
         ctx.moveTo(0, -p.size * 1.2);
         ctx.quadraticCurveTo(p.size * 0.85, p.size * 0.3, 0, p.size);
         ctx.quadraticCurveTo(-p.size * 0.85, p.size * 0.3, 0, -p.size * 1.2);
+        ctx.fill();
+      } else if (p.kind === 'leaf') {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, p.size * 1.15, p.size * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
       } else if (p.kind === 'confetti') {
         ctx.fillStyle = p.color;
@@ -683,12 +975,86 @@ export class HangerStage {
       ctx.restore();
     }
 
-    // Subtle grab flash
+    for (const pop of this.popups) {
+      const alpha = Math.max(0, pop.life / pop.maxLife);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = '900 16px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(20, 12, 28, 0.9)';
+      ctx.strokeText(pop.text, pop.x, pop.y);
+      ctx.fillStyle = pop.color;
+      ctx.fillText(pop.text, pop.x, pop.y);
+      ctx.restore();
+    }
+
     if (this.hitFlash > 0) {
       ctx.fillStyle = `rgba(254, 240, 138, ${this.hitFlash * 0.08})`;
       ctx.fillRect(0, 0, this.width, this.height);
     }
 
+    ctx.restore();
+  }
+
+  private drawStaminaMeter(ctx: CanvasRenderingContext2D): void {
+    const barW = 104;
+    const barH = 11;
+    const bx = 14;
+    const by = this.anchorY + 18;
+    const low = this.stamina < 0.28;
+    const pulse = low ? 0.6 + 0.4 * Math.sin(this.animClock * 14) : 1;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(24, 15, 34, 0.82)';
+    ctx.strokeStyle = low ? `rgba(248, 113, 113, ${pulse})` : 'rgba(251, 191, 36, 0.32)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(bx - 4, by - 4, barW + 44, barH + 8, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = '800 10px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = low ? '#fca5a5' : '#fde68a';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('GRIP', bx + 2, by + barH / 2 + 0.5);
+
+    const trackX = bx + 32;
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.26)';
+    ctx.beginPath();
+    ctx.roundRect(trackX, by, barW, barH, 6);
+    ctx.fill();
+
+    const fillW = Math.max(0, barW * this.stamina);
+    if (fillW > 0) {
+      ctx.fillStyle = this.stamina > 0.55 ? '#34d399' : this.stamina > 0.28 ? '#fbbf24' : '#f43f5e';
+      ctx.beginPath();
+      ctx.roundRect(trackX, by, fillW, barH, 6);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawWindArrowPill(ctx: CanvasRenderingContext2D): void {
+    const label = this.windDir > 0 ? '💨 WIND ━━▶' : '◀━━ WIND 💨';
+    ctx.save();
+    ctx.font = '800 11.5px system-ui, -apple-system, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const bw = tw + 18;
+    const bx = this.width - bw - 14;
+    const by = this.anchorY + 14;
+    ctx.globalAlpha = Math.min(1, 0.35 + this.windStrength * 0.65);
+    ctx.fillStyle = 'rgba(24, 15, 34, 0.85)';
+    ctx.strokeStyle = '#f472b6';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, 23, 11);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fbcfe8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, bx + bw / 2, by + 11.5);
     ctx.restore();
   }
 
@@ -709,9 +1075,8 @@ export class HangerStage {
     ctx.translate(x1, y1);
     ctx.rotate(angle);
 
-    // Outer rope shadow & base
     ctx.strokeStyle = '#78350f';
-    ctx.lineWidth = 10.5;
+    ctx.lineWidth = 10;
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -719,15 +1084,14 @@ export class HangerStage {
     ctx.stroke();
 
     ctx.strokeStyle = '#d97706';
-    ctx.lineWidth = 7.5;
+    ctx.lineWidth = 7;
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(len, 0);
     ctx.stroke();
 
-    // Braided diagonal weave highlights
     ctx.strokeStyle = '#fde68a';
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = 2.2;
     const step = 11;
     for (let d = 4; d < len - 6; d += step) {
       ctx.beginPath();
@@ -737,7 +1101,7 @@ export class HangerStage {
     }
 
     ctx.strokeStyle = '#92400e';
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 1.6;
     for (let d = 9; d < len - 6; d += step) {
       ctx.beginPath();
       ctx.moveTo(d, 3);
@@ -749,7 +1113,6 @@ export class HangerStage {
   }
 
   private drawBackdrop(ctx: CanvasRenderingContext2D): void {
-    // Rich sunset-to-twilight sky gradient
     const grad = ctx.createLinearGradient(0, 0, 0, this.height);
     grad.addColorStop(0, '#120d26');
     grad.addColorStop(0.32, '#2d163c');
@@ -759,7 +1122,6 @@ export class HangerStage {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Warm sunset horizon glow
     const sunGlow = ctx.createRadialGradient(
       this.width * 0.35,
       this.height * 0.82,
@@ -774,14 +1136,13 @@ export class HangerStage {
     ctx.fillStyle = sunGlow;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Twinkling stars with occasional cross-sparkles
     for (let i = 0; i < 24; i++) {
       const sx = ((i * 89 + 23) % 100) * 0.01 * this.width;
       const sy = 36 + ((i * 47) % 100) * 0.0044 * this.height;
       const pulse = 0.5 + 0.5 * Math.sin(this.animClock * (1.8 + (i % 3) * 0.5) + i);
       ctx.globalAlpha = 0.22 + pulse * 0.58;
       ctx.fillStyle = i % 4 === 0 ? '#bae6fd' : '#fef08a';
-      const r = (i % 3 === 0 ? 1.9 : 1.2);
+      const r = i % 3 === 0 ? 1.9 : 1.2;
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
@@ -798,69 +1159,67 @@ export class HangerStage {
     }
     ctx.globalAlpha = 1;
 
-    // Warm crescent moon with soft halo
-    const moonX = this.width * 0.82;
-    const moonY = 76;
-    const moonAura = ctx.createRadialGradient(moonX, moonY, 10, moonX, moonY, 44);
+    const moonX = this.width * 0.84;
+    const moonY = Math.min(76, this.height * 0.24);
+    const moonAura = ctx.createRadialGradient(moonX, moonY, 8, moonX, moonY, 40);
     moonAura.addColorStop(0, 'rgba(253, 224, 71, 0.32)');
     moonAura.addColorStop(1, 'rgba(253, 224, 71, 0)');
     ctx.fillStyle = moonAura;
     ctx.beginPath();
-    ctx.arc(moonX, moonY, 44, 0, Math.PI * 2);
+    ctx.arc(moonX, moonY, 40, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = 'rgba(254, 240, 138, 0.94)';
     ctx.beginPath();
-    ctx.arc(moonX, moonY, 18, 0, Math.PI * 2);
+    ctx.arc(moonX, moonY, 16, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#251436';
     ctx.beginPath();
-    ctx.arc(moonX + 7, moonY - 4, 15, 0, Math.PI * 2);
+    ctx.arc(moonX + 6, moonY - 3, 13, 0, Math.PI * 2);
     ctx.fill();
 
-    // Gently swaying warm string lights draped under pergola
-    const sway = Math.sin(this.animClock * 1.5) * 4;
+    const sway = Math.sin(this.animClock * 1.5) * 4 + this.windDir * this.windStrength * 8;
     ctx.strokeStyle = 'rgba(251, 191, 36, 0.38)';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.moveTo(0, 20);
-    ctx.quadraticCurveTo(this.width * 0.25, 44 + sway, this.width * 0.5, 22);
-    ctx.quadraticCurveTo(this.width * 0.75, 44 - sway, this.width, 20);
+    ctx.moveTo(0, 18);
+    ctx.quadraticCurveTo(this.width * 0.25, 38 + sway, this.width * 0.5, 20);
+    ctx.quadraticCurveTo(this.width * 0.75, 38 - sway, this.width, 18);
     ctx.stroke();
 
     for (let i = 1; i <= 7; i++) {
       const lx = (this.width / 8) * i;
       const t = (i % 4) / 4;
       const localSway = i < 4 ? sway : -sway;
-      const ly = 21 + Math.sin(t * Math.PI) * (15 + localSway * 0.6);
+      const ly = 19 + Math.sin(t * Math.PI) * (13 + localSway * 0.5);
       const glow = 0.72 + 0.28 * Math.sin(this.animClock * 3.2 + i * 1.1);
 
-      const bulbAura = ctx.createRadialGradient(lx, ly, 1, lx, ly, 14);
+      const bulbAura = ctx.createRadialGradient(lx, ly, 1, lx, ly, 12);
       bulbAura.addColorStop(0, `rgba(253, 224, 71, ${0.48 * glow})`);
       bulbAura.addColorStop(1, 'rgba(251, 191, 36, 0)');
       ctx.fillStyle = bulbAura;
       ctx.beginPath();
-      ctx.arc(lx, ly, 14, 0, Math.PI * 2);
+      ctx.arc(lx, ly, 12, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = `rgba(254, 249, 195, ${0.85 * glow})`;
       ctx.beginPath();
-      ctx.arc(lx, ly, 3.4, 0, Math.PI * 2);
+      ctx.arc(lx, ly, 3, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Distant city skyline silhouette
+    // Scale skyline height down on short landscape viewports so cat has open sky
+    const skyScale = Math.min(1, this.height / 440);
     const baseY = this.height;
     ctx.fillStyle = 'rgba(30, 14, 34, 0.72)';
     const farTowers = [0.05, 0.14, 0.26, 0.36, 0.49, 0.61, 0.72, 0.85, 0.93];
     for (let i = 0; i < farTowers.length; i++) {
       const tx = farTowers[i] * this.width;
       const tw = this.width * 0.1;
-      const th = 95 + ((i * 37) % 52);
+      const th = (95 + ((i * 37) % 52)) * skyScale;
       ctx.fillRect(tx, baseY - th, tw, th);
     }
 
-    // Foreground cozy rooftop silhouettes with glowing warm windows & chimneys
     const bldgs = [
       { x: 0, w: 0.22, h: 92, roof: 'gable' },
       { x: 0.2, w: 0.24, h: 68, roof: 'flat' },
@@ -872,22 +1231,21 @@ export class HangerStage {
       const b = bldgs[bi];
       const bx = b.x * this.width;
       const bw = b.w * this.width + 4;
-      const by = baseY - b.h;
+      const bh = b.h * skyScale;
+      const by = baseY - bh;
       ctx.fillStyle = '#180c09';
-      ctx.fillRect(bx, by, bw, b.h);
+      ctx.fillRect(bx, by, bw, bh);
       if (b.roof === 'gable') {
         ctx.beginPath();
         ctx.moveTo(bx - 4, by);
-        ctx.lineTo(bx + bw / 2, by - 22);
+        ctx.lineTo(bx + bw / 2, by - 20 * skyScale);
         ctx.lineTo(bx + bw + 4, by);
         ctx.closePath();
         ctx.fill();
       } else {
-        // Chimney silhouette
-        ctx.fillRect(bx + bw * 0.7, by - 12, 8, 12);
+        ctx.fillRect(bx + bw * 0.7, by - 11 * skyScale, 8, 11 * skyScale);
       }
-      // Warm lit cozy windows
-      for (let wy = by + 14; wy < baseY - 24; wy += 22) {
+      for (let wy = by + 12; wy < baseY - 20; wy += 20) {
         for (let wx = bx + 12; wx < bx + bw - 18; wx += 22) {
           if ((wx + wy + bi) % 3 !== 0) {
             ctx.fillStyle =
@@ -895,17 +1253,16 @@ export class HangerStage {
                 ? 'rgba(251, 191, 36, 0.44)'
                 : 'rgba(253, 186, 116, 0.3)';
             ctx.beginPath();
-            ctx.roundRect(wx, wy, 10, 14, 2);
+            ctx.roundRect(wx, wy, 9, 12, 2);
             ctx.fill();
           }
         }
       }
     }
 
-    // Cozy terrace railing & sill at bottom
     ctx.fillStyle = '#2e1005';
-    ctx.fillRect(0, baseY - 14, this.width, 14);
+    ctx.fillRect(0, baseY - 12, this.width, 12);
     ctx.fillStyle = '#92400e';
-    ctx.fillRect(0, baseY - 16, this.width, 3);
+    ctx.fillRect(0, baseY - 14, this.width, 3);
   }
 }
